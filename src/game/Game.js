@@ -4,11 +4,14 @@ import { getRandomUpgrades, applyUpgrade } from './UpgradeSystem.js';
 import { Player } from '../entities/Player.js';
 import { Enemy } from '../entities/Enemy.js';
 import { Gem } from '../entities/Gem.js';
+import { Boss } from '../entities/Boss.js';
 import { AudioSystem } from '../audio/AudioSystem.js';
 import { Spawner } from '../systems/Spawner.js';
 import { CollisionSystem } from '../systems/CollisionSystem.js';
 import { safeStorageGet, safeStorageSet } from './Progress.js';
 import { Menu } from '../ui/Menu.js';
+import { CHARACTERS, applyCharacterStats } from './Characters.js';
+import { maybeGrantAchievements } from './AchievementSystem.js';
 
 export class Game {
   constructor(canvas) {
@@ -33,6 +36,11 @@ export class Game {
     });
     this.audio.setVolume(this.settings.volume ?? 0.5);
 
+    this.characterId = safeStorageGet('lantern-keeper-character', 'warden') ?? 'warden';
+    this.achievements = safeStorageGet('lantern-keeper-achievements', {});
+    this.bossDefeated = false;
+    this.zenCleared = false;
+
     this.cameraX = 0;
     this.cameraY = 0;
     this.screenShake = 0;
@@ -53,7 +61,9 @@ export class Game {
     this.pendingUpgrades = [];
     this.upgradeOpen = false;
 
-    this.player = new Player(CONFIG.worldWidth / 2, CONFIG.worldHeight / 2);
+    this.player = new Player(CONFIG.worldWidth / 2, CONFIG.worldHeight / 2, this.characterId);
+    applyCharacterStats(this.player, this.characterId);
+
     this.spawner = new Spawner(this, this.rng);
     this.collision = new CollisionSystem(this);
     this.highScore = safeStorageGet('lantern-keeper-best', 0) ?? 0;
@@ -65,6 +75,19 @@ export class Game {
     this.renderBackgroundFrame();
   }
 
+  setCharacter(characterId) {
+    if (!CHARACTERS[characterId]) return;
+    this.characterId = characterId;
+    safeStorageSet('lantern-keeper-character', characterId);
+    if (this.state === 'menu') {
+      this.menu.panel = 'main';
+      this.menu.updateButtons();
+    }
+    if (this.player instanceof Player) {
+      applyCharacterStats(this.player, characterId);
+    }
+  }
+
   bindInput() {
     window.addEventListener('keydown', (event) => {
       const key = event.key.toLowerCase();
@@ -72,17 +95,19 @@ export class Game {
       if (key === 's' || key === 'arrowdown') this.input.down = true;
       if (key === 'a' || key === 'arrowleft') this.input.left = true;
       if (key === 'd' || key === 'arrowright') this.input.right = true;
-
+      if (key === ' ') {
+        if (this.state === 'playing') {
+          this.player.activateSpecial(this);
+        }
+      }
       if (key === 'escape' && this.state === 'playing') {
         this.state = 'paused';
       } else if (key === 'escape' && this.state === 'paused') {
         this.state = 'playing';
       }
-
       if (key === 'r' && this.state === 'gameover') {
         this.startMode(this.mode);
       }
-
       if (this.upgradeOpen && ['1', '2', '3'].includes(key)) {
         const idx = Number(key) - 1;
         if (this.pendingUpgrades[idx]) {
@@ -108,9 +133,23 @@ export class Game {
       this.input.pointerActive = true;
     });
 
-    window.addEventListener('pointerdown', () => {
+    this.canvas.addEventListener('pointerdown', (event) => {
       this.audio.init();
       this.audio.setVolume(this.settings.volume ?? 0.5);
+
+      if (this.state === 'menu' && this.menu.visible) {
+        this.menu.handlePointer(event);
+      }
+
+      if (this.state === 'gameover') {
+        const rect = this.canvas.getBoundingClientRect();
+        const px = event.clientX - rect.left;
+        const py = event.clientY - rect.top;
+        const shareBox = { x: rect.width * 0.35, y: rect.height * 0.66, w: rect.width * 0.3, h: 50 };
+        if (px >= shareBox.x && px <= shareBox.x + shareBox.w && py >= shareBox.y && py <= shareBox.y + shareBox.h) {
+          this.shareRun();
+        }
+      }
     });
   }
 
@@ -118,6 +157,9 @@ export class Game {
     this.settings = { ...this.settings, ...settings };
     safeStorageSet('lantern-keeper-settings', this.settings);
     this.audio.setVolume(this.settings.volume ?? 0.5);
+    if (this.state === 'menu') {
+      this.menu.updateButtons();
+    }
   }
 
   resize() {
@@ -135,7 +177,9 @@ export class Game {
     this.mode = mode;
     this.state = 'playing';
     this.menu.hide();
-    this.player = new Player(CONFIG.worldWidth / 2, CONFIG.worldHeight / 2);
+    this.player = new Player(CONFIG.worldWidth / 2, CONFIG.worldHeight / 2, this.characterId);
+    applyCharacterStats(this.player, this.characterId);
+
     this.enemies = [];
     this.gems = [];
     this.sparks = [];
@@ -148,6 +192,8 @@ export class Game {
     this.upgradeOpen = false;
     this.cameraX = this.player.x;
     this.cameraY = this.player.y;
+    this.bossDefeated = false;
+    this.zenCleared = false;
 
     if (mode === 'daily') {
       this.rng = new SeededRNG(makeDailySeed());
@@ -156,6 +202,12 @@ export class Game {
     } else if (mode === 'zen') {
       this.rng = new SeededRNG(4321);
       this.modeLabel = 'Zen Mode';
+    } else if (mode === 'boss') {
+      this.rng = new SeededRNG(9999);
+      this.modeLabel = 'Boss Rush';
+      this.bossSchedule = ['duskTitan', 'ashWraith', 'eclipseWarden'];
+      this.bossIndex = 0;
+      this.bossNextAt = 90;
     } else {
       this.rng = new SeededRNG(Date.now() % 1000000);
       this.modeLabel = 'Survival';
@@ -182,6 +234,14 @@ export class Game {
     this.enemies.push(new Enemy(choice, x, y));
   }
 
+  spawnBoss(type) {
+    const angle = Math.random() * Math.PI * 2;
+    const x = this.player.x + Math.cos(angle) * 220;
+    const y = this.player.y + Math.sin(angle) * 220;
+    this.enemies.push(new Boss(type, x, y));
+    this.audio.levelUp();
+  }
+
   spawnGem(x, y, value = 1) {
     this.gems.push(new Gem(x, y, value));
   }
@@ -203,16 +263,29 @@ export class Game {
     this.audio.levelUp();
   }
 
-  update(dt) {
-    if (this.state === 'menu' || this.state === 'paused' || this.state === 'upgrade') {
-      return;
+  shareRun() {
+    const message = `I survived ${this.mode} in Lantern Keeper with ${this.score} score and reached level ${this.level}.`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(message).catch(() => {});
     }
+    if (navigator.share) {
+      navigator.share({ title: 'Lantern Keeper', text: message }).catch(() => {});
+    }
+  }
 
-    if (this.state === 'gameover') {
+  update(dt) {
+    if (this.state === 'menu' || this.state === 'paused' || this.state === 'upgrade' || this.state === 'gameover') {
       return;
     }
 
     this.elapsed += dt;
+
+    if (this.mode === 'boss' && this.bossSchedule && this.bossIndex < this.bossSchedule.length && this.elapsed >= this.bossNextAt) {
+      this.spawnBoss(this.bossSchedule[this.bossIndex]);
+      this.bossIndex += 1;
+      this.bossNextAt += 90;
+    }
+
     this.player.update(dt, this.input, this.enemies, this.sparks);
     this.spawner.update(dt);
 
@@ -220,17 +293,22 @@ export class Game {
       const enemy = this.enemies[i];
       const shot = enemy.update(dt, this.player);
       if (shot) {
-        this.sparks.push({
-          x: shot.x,
-          y: shot.y,
-          vx: shot.dx * 220,
-          vy: shot.dy * 220,
-          radius: 5,
-          life: 2,
-          damage: 7,
-          dead: false,
-          tint: '#a7f3d0'
-        });
+        const count = shot.burst || 1;
+        const base = shot.angle ?? Math.atan2(shot.dy || 0, shot.dx || 1);
+        for (let j = 0; j < count; j += 1) {
+          const angle = base + (count > 1 ? ((Math.PI * 2) / count) * j - Math.PI / 2 : 0) + (shot.spread || 0) * (Math.random() - 0.5);
+          this.sparks.push({
+            x: shot.x,
+            y: shot.y,
+            vx: Math.cos(angle) * (shot.speed || 220),
+            vy: Math.sin(angle) * (shot.speed || 220),
+            radius: enemy instanceof Boss ? 7 : 5,
+            life: enemy instanceof Boss ? 2.4 : 2,
+            damage: enemy instanceof Boss ? enemy.damage : 7,
+            dead: false,
+            tint: enemy instanceof Boss ? '#d4b4ff' : '#a7f3d0'
+          });
+        }
       }
     }
 
@@ -252,15 +330,17 @@ export class Game {
     const danger = Math.min(1, this.elapsed / 60);
     this.audio.updateIntensity(danger);
 
+    if (this.mode === 'zen') {
+      this.player.health = Math.min(this.player.maxHealth, this.player.health + dt * 7);
+    }
+
     if (this.player.health <= 0 && this.mode !== 'zen') {
       this.highScore = Math.max(this.highScore, this.score);
       safeStorageSet('lantern-keeper-best', this.highScore);
       this.state = 'gameover';
+      this.zenCleared = false;
+      maybeGrantAchievements(this);
       return;
-    }
-
-    if (this.mode === 'zen') {
-      this.player.health = Math.min(this.player.maxHealth, this.player.health + dt * 5);
     }
 
     while (this.xp >= this.xpToNext) {
@@ -271,8 +351,13 @@ export class Game {
       break;
     }
 
+    if (this.mode === 'zen' && this.elapsed > 20) {
+      this.zenCleared = true;
+    }
+
     this.highScore = Math.max(this.highScore, this.score);
     safeStorageSet('lantern-keeper-best', this.highScore);
+    maybeGrantAchievements(this);
   }
 
   renderBackgroundFrame() {
@@ -295,11 +380,7 @@ export class Game {
     this.ctx.fillRect(0, 0, width, height);
 
     if (this.state === 'menu') {
-      this.ctx.fillStyle = 'rgba(8, 17, 27, 0.66)';
-      this.ctx.fillRect(0, 0, width, height);
-      this.ctx.fillStyle = '#edf5ff';
-      this.ctx.font = '36px sans-serif';
-      this.ctx.fillText('Lantern Keeper', width / 2 - 150, height * 0.22);
+      this.menu.draw(this.ctx, width, height);
       return;
     }
 
@@ -353,7 +434,11 @@ export class Game {
       this.ctx.fillText('Run Over', width / 2 - 65, height / 2 - 20);
       this.ctx.font = '18px sans-serif';
       this.ctx.fillText(`Score: ${this.score}`, width / 2 - 38, height / 2 + 18);
-      this.ctx.fillText('Press R to restart', width / 2 - 70, height / 2 + 52);
+      this.ctx.fillText(`Character: ${CHARACTERS[this.characterId]?.name || 'Warden'}`, width / 2 - 94, height / 2 + 52);
+      this.ctx.fillStyle = '#7ae7ff';
+      this.ctx.fillRect(width * 0.35, height * 0.66, width * 0.3, 40);
+      this.ctx.fillStyle = '#07121d';
+      this.ctx.fillText('Share Card', width * 0.38, height * 0.69 + 14);
     }
   }
 
@@ -371,6 +456,7 @@ export class Game {
     this.ctx.fillText(`Score ${this.score}`, 20, 94);
     this.ctx.fillText(`Mode ${this.modeLabel || this.mode}`, width - 170, 24);
     this.ctx.fillText(`Best ${this.highScore}`, width - 120, 44);
+    this.ctx.fillText(`${CHARACTERS[this.characterId]?.name || 'Lantern Warden'}`, width - 190, 64);
   }
 
   drawUpgradeScreen(width, height) {

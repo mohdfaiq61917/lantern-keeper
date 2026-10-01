@@ -1,3 +1,6 @@
+import { safeStorageSet } from '../game/Progress.js';
+import { CHARACTERS } from '../game/Characters.js';
+
 export class Menu {
   constructor(game) {
     this.game = game;
@@ -26,19 +29,27 @@ export class Menu {
 
     if (this.panel === 'main') {
       this.buttons = [
-        { id: 'survival', label: 'Survival', x: 0.28, y: 0.36, w: 0.44, h: 0.08, action: () => this.game.startMode('survival') },
-        { id: 'daily', label: 'Daily Challenge', x: 0.28, y: 0.47, w: 0.44, h: 0.08, action: () => this.game.startMode('daily') },
-        { id: 'boss', label: 'Boss Rush', x: 0.28, y: 0.58, w: 0.44, h: 0.08, action: () => this.game.startMode('boss') },
-        { id: 'zen', label: 'Zen Mode', x: 0.28, y: 0.69, w: 0.44, h: 0.08, action: () => this.game.startMode('zen') },
-        { id: 'settings', label: 'Settings', x: 0.28, y: 0.8, w: 0.2, h: 0.07, action: () => this.setPanel('settings') },
-        { id: 'help', label: 'How To Play', x: 0.52, y: 0.8, w: 0.2, h: 0.07, action: () => this.setPanel('help') }
+        { id: 'survival', label: 'Survival', x: 0.28, y: 0.34, w: 0.44, h: 0.07, action: () => this.game.startMode('survival') },
+        { id: 'daily', label: 'Daily Challenge', x: 0.28, y: 0.45, w: 0.44, h: 0.07, action: () => this.game.startMode('daily') },
+        { id: 'boss', label: 'Boss Rush', x: 0.28, y: 0.56, w: 0.44, h: 0.07, action: () => this.game.startMode('boss') },
+        { id: 'zen', label: 'Zen Mode', x: 0.28, y: 0.67, w: 0.44, h: 0.07, action: () => this.game.startMode('zen') },
+        { id: 'chars', label: 'Characters', x: 0.28, y: 0.78, w: 0.19, h: 0.07, action: () => this.setPanel('characters') },
+        { id: 'settings', label: 'Settings', x: 0.49, y: 0.78, w: 0.19, h: 0.07, action: () => this.setPanel('settings') },
+        { id: 'help', label: 'How To Play', x: 0.28, y: 0.87, w: 0.4, h: 0.07, action: () => this.setPanel('help') }
+      ];
+    } else if (this.panel === 'characters') {
+      this.buttons = [
+        { id: 'warden', label: `Warden - ${CHARACTERS.warden.ability}`, x: 0.22, y: 0.3, w: 0.56, h: 0.08, action: () => this.game.setCharacter('warden') },
+        { id: 'runner', label: `Runner - ${CHARACTERS.runner.ability}`, x: 0.22, y: 0.43, w: 0.56, h: 0.08, action: () => this.game.setCharacter('runner') },
+        { id: 'seer', label: `Seer - ${CHARACTERS.seer.ability}`, x: 0.22, y: 0.56, w: 0.56, h: 0.08, action: () => this.game.setCharacter('seer') },
+        { id: 'back', label: 'Back', x: 0.38, y: 0.82, w: 0.24, h: 0.08, action: () => this.setPanel('main') }
       ];
     } else if (this.panel === 'settings') {
       this.buttons = [
         { id: 'volumeUp', label: 'Volume +', x: 0.28, y: 0.38, w: 0.18, h: 0.07, action: () => this.game.applySettings({ volume: Math.min(1, (this.game.settings.volume ?? 0.5) + 0.1) }) },
         { id: 'volumeDown', label: 'Volume -', x: 0.52, y: 0.38, w: 0.18, h: 0.07, action: () => this.game.applySettings({ volume: Math.max(0, (this.game.settings.volume ?? 0.5) - 0.1) }) },
-        { id: 'shake', label: 'Screen Shake: On', x: 0.28, y: 0.52, w: 0.42, h: 0.08, action: () => this.game.applySettings({ screenShake: !this.game.settings.screenShake }) },
-        { id: 'palette', label: 'Palette: Normal', x: 0.28, y: 0.64, w: 0.42, h: 0.08, action: () => this.game.applySettings({ palette: this.game.settings.palette === 'none' ? 'proto' : 'none' }) },
+        { id: 'shake', label: `Screen Shake: ${this.game.settings.screenShake ? 'On' : 'Off'}`, x: 0.28, y: 0.52, w: 0.42, h: 0.08, action: () => this.game.applySettings({ screenShake: !this.game.settings.screenShake }) },
+        { id: 'palette', label: `Palette: ${this.game.settings.palette === 'none' ? 'Normal' : 'Proto'}`, x: 0.28, y: 0.64, w: 0.42, h: 0.08, action: () => this.game.applySettings({ palette: this.game.settings.palette === 'none' ? 'proto' : 'none' }) },
         { id: 'back', label: 'Back', x: 0.4, y: 0.82, w: 0.2, h: 0.08, action: () => this.setPanel('main') }
       ];
     } else if (this.panel === 'help') {
@@ -64,7 +75,9 @@ export class Menu {
       const by = button.y * this.game.canvas.height;
       const bw = button.w * this.game.canvas.width;
       const bh = button.h * this.game.canvas.height;
-      if (x * this.game.canvas.width >= bx && x * this.game.canvas.width <= bx + bw && y * this.game.canvas.height >= by && y * this.game.canvas.height <= by + bh) {
+      const px = x * this.game.canvas.width;
+      const py = y * this.game.canvas.height;
+      if (px >= bx && px <= bx + bw && py >= by && py <= by + bh) {
         button.action();
         return;
       }
@@ -94,6 +107,10 @@ export class Menu {
       ctx.font = '20px sans-serif';
       ctx.fillStyle = '#b6cde8';
       ctx.fillText('Keep the lantern alive. Survive the dark.', width * 0.5 - 180, height * 0.25);
+      ctx.fillStyle = '#edf5ff';
+      ctx.fillText(`Selected: ${CHARACTERS[this.game.characterId]?.name || 'Warden'}`, width * 0.28, height * 0.32);
+    } else if (this.panel === 'characters') {
+      ctx.fillText('Choose a keeper', width * 0.5 - 120, height * 0.2);
     } else if (this.panel === 'settings') {
       ctx.fillText('Settings', width * 0.5 - 80, height * 0.2);
       ctx.font = '18px sans-serif';
@@ -109,8 +126,8 @@ export class Menu {
         'Move with WASD or arrow keys.',
         'The lantern auto-fires at the nearest enemy inside its light radius.',
         'Collect gem drops to fill your XP bar and level up.',
-        'Each level up grants a random upgrade, choose wisely.',
-        'Survive long enough to beat the shadows.'
+        'Press Space to trigger your character ability.',
+        'Each level up grants a random upgrade.'
       ];
       lines.forEach((line, i) => {
         ctx.fillText(line, width * 0.22, height * 0.3 + i * 28);
